@@ -10,16 +10,6 @@ export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
   title: "Pedro Mariniello | Processos, Sistemas & Automação",
   description: "Portfólio de Pedro Mariniello, Analista de Sistemas especializado em planejamento, processos, automação e transformação digital.",
-  icons: {
-    icon: [
-      {
-        url: "/pedro-mariniello-logo.png?v=20260715",
-        type: "image/png",
-      },
-    ],
-    shortcut: "/pedro-mariniello-logo.png?v=20260715",
-    apple: "/pedro-mariniello-logo.png?v=20260715",
-  },
   openGraph: {
     title: "Pedro Mariniello | Processos, Sistemas & Automação",
     description: "Processos claros e sistemas que avançam: planejamento, automação e transformação digital por Pedro Mariniello.",
