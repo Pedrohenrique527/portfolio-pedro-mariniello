@@ -2,6 +2,7 @@ import { FieldValue, type Timestamp } from "firebase-admin/firestore";
 import { requireFirebaseAdmin } from "../../../../lib/firebase/admin";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 type AdminRecommendationRow = {
   name?: string;
