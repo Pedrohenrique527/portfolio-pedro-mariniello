@@ -1,34 +1,24 @@
 import { FieldValue, type Timestamp } from "firebase-admin/firestore";
-import { getFirebaseAdminServices } from "../../../lib/firebase/admin";
+import { requireFirebaseAdmin } from "../../../../lib/firebase/admin";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
-type RecommendationPayload = {
+type AdminRecommendationRow = {
   name?: string;
   role?: string;
-  company?: string;
-  photo?: string;
+  company?: string | null;
+  photo?: string | null;
   email?: string;
   stars?: number;
   comment?: string;
-  website?: string;
-};
-
-type RecommendationRow = {
-  name: string;
-  role: string;
-  company: string | null;
-  photo: string | null;
-  email: string;
-  stars: number;
-  comment: string;
-  status: "pendente" | "aprovado" | "rejeitado";
+  status?: "pendente" | "aprovado" | "rejeitado";
   createdAt?: Timestamp | Date | string | null;
   approvedAt?: Timestamp | Date | string | null;
 };
 
-function clean(value: unknown, max: number) {
-  return typeof value === "string" ? value.trim().slice(0, max) : "";
+function unauthorized() {
+  return Response.json({ error: "Acesso não autorizado." }, { status: 403 });
 }
 
 function toISOString(value: Timestamp | Date | string | null | undefined) {
@@ -38,65 +28,30 @@ function toISOString(value: Timestamp | Date | string | null | undefined) {
   return value.toDate().toISOString();
 }
 
-function validate(payload: RecommendationPayload) {
-  const name = clean(payload.name, 100);
-  const role = clean(payload.role, 120);
-  const company = clean(payload.company, 120);
-  const email = clean(payload.email, 180).toLowerCase();
-  const comment = clean(payload.comment, 1800);
-  const stars = Number(payload.stars);
-  const photo = typeof payload.photo === "string" ? payload.photo : "";
+export async function GET(request: Request) {
+  const firebase = await requireFirebaseAdmin(request);
+  if (!firebase) return unauthorized();
 
-  if (payload.website) return { error: "Não foi possível enviar." };
-  if (name.length < 2 || role.length < 2) return { error: "Informe nome e cargo." };
-  if (!/^\S+@\S+\.\S+$/.test(email)) return { error: "Informe um e-mail válido." };
-  if (!Number.isInteger(stars) || stars < 1 || stars > 5) return { error: "Escolha de 1 a 5 estrelas." };
-  if (comment.length < 30) return { error: "Escreva um depoimento com pelo menos 30 caracteres." };
-  if (photo && (!/^data:image\/(jpeg|png|webp);base64,/.test(photo) || photo.length > 220_000)) {
-    return { error: "A foto é inválida ou muito grande." };
-  }
-
-  return {
-    values: {
-      name,
-      role,
-      company: company || null,
-      email,
-      comment,
-      stars,
-      photo: photo || null,
-      status: "pendente" as const,
-    },
-  };
-}
-
-export async function GET() {
   try {
-    const { db } = getFirebaseAdminServices();
-    const snapshot = await db.collection("recommendations").where("status", "==", "aprovado").limit(100).get();
-    const rows = snapshot.docs
-      .map((document) => ({ id: document.id, ...(document.data() as RecommendationRow) }))
-      .sort((a, b) => {
-        const aDate = toISOString(a.approvedAt) || toISOString(a.createdAt) || "";
-        const bDate = toISOString(b.approvedAt) || toISOString(b.createdAt) || "";
-        return bDate.localeCompare(aDate);
-      })
-      .slice(0, 30);
-    const count = rows.length;
-    const average = count ? rows.reduce((sum, row) => sum + row.stars, 0) / count : 0;
+    const snapshot = await firebase.db.collection("recommendations").limit(200).get();
+    const data = snapshot.docs
+      .map((document) => ({ id: document.id, ...(document.data() as AdminRecommendationRow) }))
+      .sort((a, b) => (toISOString(b.createdAt) || "").localeCompare(toISOString(a.createdAt) || ""));
 
     return Response.json({
-      recommendations: rows.map((row) => ({
+      recommendations: data.map((row) => ({
         id: row.id,
         name: row.name,
         role: row.role,
         company: row.company,
         photo: row.photo,
+        email: row.email,
         stars: row.stars,
         comment: row.comment,
+        status: row.status,
         createdAt: toISOString(row.createdAt),
+        approvedAt: toISOString(row.approvedAt),
       })),
-      stats: { count, average: Number(average.toFixed(1)) },
     });
   } catch (error) {
     return Response.json(
@@ -106,26 +61,62 @@ export async function GET() {
   }
 }
 
-export async function POST(request: Request) {
+export async function PATCH(request: Request) {
+  const firebase = await requireFirebaseAdmin(request);
+  if (!firebase) return unauthorized();
+
   try {
-    const payload = (await request.json()) as RecommendationPayload;
-    const result = validate(payload);
-    if ("error" in result) return Response.json({ error: result.error }, { status: 400 });
+    const payload = (await request.json()) as {
+      id?: string;
+      status?: "pendente" | "aprovado" | "rejeitado";
+      name?: string;
+      role?: string;
+      company?: string;
+      stars?: number;
+      comment?: string;
+    };
+    const id = typeof payload.id === "string" ? payload.id.trim() : "";
+    if (!id) return Response.json({ error: "ID inválido." }, { status: 400 });
 
-    const { db } = getFirebaseAdminServices();
-    const document = await db.collection("recommendations").add({
-      ...result.values,
-      createdAt: FieldValue.serverTimestamp(),
-      approvedAt: null,
-    });
+    const values: Record<string, string | number | null | FieldValue> = {};
+    if (payload.status && ["pendente", "aprovado", "rejeitado"].includes(payload.status)) {
+      values.status = payload.status;
+      values.approvedAt = payload.status === "aprovado" ? FieldValue.serverTimestamp() : null;
+    }
+    if (typeof payload.name === "string") values.name = payload.name.trim().slice(0, 100);
+    if (typeof payload.role === "string") values.role = payload.role.trim().slice(0, 120);
+    if (typeof payload.company === "string") values.company = payload.company.trim().slice(0, 120) || null;
+    if (typeof payload.comment === "string") values.comment = payload.comment.trim().slice(0, 1800);
+    if (Number.isInteger(payload.stars) && Number(payload.stars) >= 1 && Number(payload.stars) <= 5) {
+      values.stars = Number(payload.stars);
+    }
+    if (!Object.keys(values).length) {
+      return Response.json({ error: "Nenhuma alteração recebida." }, { status: 400 });
+    }
 
-    return Response.json(
-      { id: document.id, message: "Recomendação enviada para aprovação." },
-      { status: 201 },
-    );
+    await firebase.db.collection("recommendations").doc(id).update(values);
+    return Response.json({ ok: true });
   } catch (error) {
     return Response.json(
-      { error: error instanceof Error ? error.message : "Erro ao enviar recomendação." },
+      { error: error instanceof Error ? error.message : "Erro ao atualizar recomendação." },
+      { status: 500 },
+    );
+  }
+}
+
+export async function DELETE(request: Request) {
+  const firebase = await requireFirebaseAdmin(request);
+  if (!firebase) return unauthorized();
+
+  try {
+    const id = new URL(request.url).searchParams.get("id")?.trim();
+    if (!id) return Response.json({ error: "ID inválido." }, { status: 400 });
+
+    await firebase.db.collection("recommendations").doc(id).delete();
+    return Response.json({ ok: true });
+  } catch (error) {
+    return Response.json(
+      { error: error instanceof Error ? error.message : "Erro ao excluir recomendação." },
       { status: 500 },
     );
   }
